@@ -1,0 +1,15 @@
+---
+# Metadata used by scripts/package.ps1 to generate meta.json (same fields as jellyfin-plugin-template).
+name: "Two Factor (TOTP)"
+guid: "96ef38eb-a06e-43fd-8411-48d0675cb41c"
+version: "0.4.0.0"
+targetAbi: "12.1.0.0"
+framework: "net10.0"
+overview: "TOTP two-factor login page for Jellyfin"
+description: >
+  Adds a two-step login page (password, then TOTP code) that opens the
+  Jellyfin session only after both factors are valid. Personal prototype.
+category: "Authentication"
+owner: "Ekix-SG"
+artifacts:
+- "Jellyfin.Plugin.TwoFactor.dll"

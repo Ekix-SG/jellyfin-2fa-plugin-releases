@@ -1,0 +1,89 @@
+name: release
+
+# Push a tag equal to build.yaml's version (e.g. v0.3.3.0) to build the plugin,
+# create the GitHub Release with the zip and add the version to manifest.json.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refresh annotated tags
+        run: git fetch --tags --force
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Check the tag matches build.yaml
+        shell: bash
+        run: |
+          v=$(sed -nE 's/^version:[[:space:]]*"?([^"]*)"?[[:space:]]*$/\1/p' build.yaml | tr -d '\r')
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match build.yaml version $v"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Package
+        shell: pwsh
+        run: ./scripts/package.ps1
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LOG=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          gh release create "$GITHUB_REF_NAME" "dist/Jellyfin.Plugin.TwoFactor_${VERSION}.zip" \
+            --title "$GITHUB_REF_NAME" --notes "${LOG:-Release $GITHUB_REF_NAME}"
+
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: main
+
+      - name: Update manifest.json
+        shell: bash
+        run: |
+          ZIP="dist/Jellyfin.Plugin.TwoFactor_${VERSION}.zip"
+          SUM=$(md5sum "$ZIP" | cut -d' ' -f1)   # Jellyfin requires MD5
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/$(basename "$ZIP")"
+          LOG=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          [ -n "$LOG" ] || LOG="Release $GITHUB_REF_NAME"
+          META=$(unzip -p "$ZIP" meta.json)
+          [ -f main/manifest.json ] || echo '[]' > main/manifest.json
+          jq --argjson m "$META" --arg url "$URL" --arg sum "$SUM" --arg log "$LOG" '
+            (if any(.[]; .guid == $m.guid) then .
+             else . + [{guid:$m.guid, name:$m.name, description:$m.description,
+                        overview:$m.overview, owner:$m.owner, category:$m.category, versions:[]}] end)
+            | map(if .guid == $m.guid
+                  then .versions = ([{version:$m.version, changelog:$log, targetAbi:$m.targetAbi,
+                                      sourceUrl:$url, checksum:$sum, timestamp:$m.timestamp}]
+                                    + (.versions | map(select(.version != $m.version))))
+                  else . end)
+          ' main/manifest.json > main/manifest.new && mv main/manifest.new main/manifest.json
+
+      - name: Commit manifest.json
+        shell: bash
+        working-directory: main
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          git commit -m "Add ${GITHUB_REF_NAME} to manifest"
+          git push
